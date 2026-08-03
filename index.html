@@ -15,8 +15,17 @@
   <main class="app-main">
     <section class="panel">
       <form id="ticker-form">
-        <label for="ticker">Ticker</label>
-        <input id="ticker" name="ticker" type="text" placeholder="e.g. AAPL, MSFT, NVDA" required />
+        <div class="tickers-row">
+          <div class="field-group">
+            <label for="ticker">Primary Ticker</label>
+            <input id="ticker" name="ticker" type="text" placeholder="e.g. AAPL, NVDA" required />
+          </div>
+
+          <div class="field-group">
+            <label for="compare-ticker">Compare Ticker <span class="optional">(Optional)</span></label>
+            <input id="compare-ticker" name="compare-ticker" type="text" placeholder="e.g. MSFT, SPY" />
+          </div>
+        </div>
 
         <label for="twelvedata-key">Twelve Data API key</label>
         <input id="twelvedata-key" name="twelvedata-key" type="password" placeholder="Twelve Data key" required />
@@ -25,7 +34,7 @@
         <label for="openrouter-key">OpenRouter API key</label>
         <input id="openrouter-key" name="openrouter-key" type="password" placeholder="sk-or-..." required />
 
-        <button type="submit">Analyze Ticker</button>
+        <button type="submit">Analyze & Compare</button>
       </form>
     </section>
 

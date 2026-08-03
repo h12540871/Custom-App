@@ -11,26 +11,46 @@ const form = document.getElementById('ticker-form');
 const results = document.getElementById('results');
 
 let stockChart = null;
-let activePriceData = [];
-let currentTicker = '';
+let activePrimaryData = [];
+let activeCompareData = [];
+let currentPrimaryTicker = '';
+let currentCompareTicker = '';
+let chartMode = 'pct'; // 'pct' or 'price'
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
 
-  const ticker = document.getElementById('ticker').value.trim().toUpperCase();
+  const primaryTicker = document.getElementById('ticker').value.trim().toUpperCase();
+  const compareTicker = document.getElementById('compare-ticker').value.trim().toUpperCase();
   const twelveDataKey = document.getElementById('twelvedata-key').value.trim();
   const openRouterKey = document.getElementById('openrouter-key').value.trim();
 
-  results.innerHTML = '<p class="placeholder">Fetching 5-year price history and generating AI research note...</p>';
+  const statusText = compareTicker
+    ? `Fetching 5-year price history for ${primaryTicker} & ${compareTicker} and generating comparative AI research note...`
+    : `Fetching 5-year price history for ${primaryTicker} and generating AI research note...`;
+
+  results.innerHTML = `<p class="placeholder">${statusText}</p>`;
 
   try {
-    const priceData = await fetchPriceData(ticker, twelveDataKey);
-    activePriceData = priceData;
-    currentTicker = ticker;
+    const primaryData = await fetchPriceData(primaryTicker, twelveDataKey);
+    let compareData = null;
 
-    const note = await getResearchNote(ticker, priceData, openRouterKey);
-    renderResults(ticker, priceData, note);
-    renderChart(priceData);
+    if (compareTicker && compareTicker !== primaryTicker) {
+      try {
+        compareData = await fetchPriceData(compareTicker, twelveDataKey);
+      } catch (compareErr) {
+        console.warn('Could not fetch compare ticker data:', compareErr);
+      }
+    }
+
+    activePrimaryData = primaryData;
+    activeCompareData = compareData;
+    currentPrimaryTicker = primaryTicker;
+    currentCompareTicker = compareData ? compareTicker : '';
+
+    const note = await getResearchNote(primaryTicker, primaryData, compareData ? compareTicker : null, compareData, openRouterKey);
+    renderResults(primaryTicker, primaryData, compareData ? compareTicker : null, compareData, note);
+    filterAndRenderChart('5Y');
   } catch (err) {
     results.innerHTML = `<p class="error">Something went wrong: ${err.message}</p>`;
   }
@@ -47,11 +67,11 @@ async function fetchPriceData(ticker, apiKey) {
   try {
     raw = JSON.parse(body);
   } catch {
-    throw new Error(body.trim() || 'Price fetch failed');
+    throw new Error(body.trim() || `Price fetch failed for ${ticker}`);
   }
 
-  if (raw && raw.status === 'error') throw new Error(raw.message || 'Price fetch failed');
-  if (!response.ok) throw new Error('Price fetch failed');
+  if (raw && raw.status === 'error') throw new Error(raw.message || `Price fetch failed for ${ticker}`);
+  if (!response.ok) throw new Error(`Price fetch failed for ${ticker}`);
 
   const values = raw.values ?? [];
   if (!values.length) throw new Error(`No price data returned for ${ticker}`);
@@ -68,20 +88,26 @@ async function fetchPriceData(ticker, apiKey) {
     .sort((a, b) => (a.date < b.date ? -1 : 1));
 }
 
-async function getResearchNote(ticker, priceData, apiKey) {
-  const first = priceData[0];
-  const latest = priceData[priceData.length - 1];
-  const pctChange5Y = ((latest.close - first.close) / first.close) * 100;
+async function getResearchNote(primaryTicker, primaryData, compareTicker, compareData, apiKey) {
+  const pFirst = primaryData[0];
+  const pLatest = primaryData[primaryData.length - 1];
+  const pPct5Y = ((pLatest.close - pFirst.close) / pFirst.close) * 100;
 
-  // Recent 1-year snippet if available
-  const oneYearAgoIndex = Math.max(0, priceData.length - 252);
-  const oneYearAgo = priceData[oneYearAgoIndex];
-  const pctChange1Y = ((latest.close - oneYearAgo.close) / oneYearAgo.close) * 100;
+  let summary =
+    `${primaryTicker} 5-year trend (${pFirst.date} to ${pLatest.date}): ` +
+    `Start $${pFirst.close.toFixed(2)}, Latest $${pLatest.close.toFixed(2)} (${pPct5Y >= 0 ? '+' : ''}${pPct5Y.toFixed(1)}%).`;
 
-  const summary =
-    `${ticker} 5-year price history from ${first.date} to ${latest.date}: ` +
-    `5-year start $${first.close.toFixed(2)}, current $${latest.close.toFixed(2)} (${pctChange5Y >= 0 ? '+' : ''}${pctChange5Y.toFixed(1)}%). ` +
-    `1-year change: ${pctChange1Y >= 0 ? '+' : ''}${pctChange1Y.toFixed(1)}%. Total trading days analyzed: ${priceData.length}.`;
+  if (compareTicker && compareData && compareData.length) {
+    const cFirst = compareData[0];
+    const cLatest = compareData[compareData.length - 1];
+    const cPct5Y = ((cLatest.close - cFirst.close) / cFirst.close) * 100;
+    summary += `\nComparison Stock (${compareTicker}) 5-year trend (${cFirst.date} to ${cLatest.date}): ` +
+      `Start $${cFirst.close.toFixed(2)}, Latest $${cLatest.close.toFixed(2)} (${cPct5Y >= 0 ? '+' : ''}${cPct5Y.toFixed(1)}%).`;
+  }
+
+  const promptMessage = (compareTicker && compareData)
+    ? `${summary}\n\nWrite a concise one-paragraph comparative research note evaluating ${primaryTicker} vs ${compareTicker} based on their 5-year performance and market positioning.`
+    : `${summary}\n\nWrite a concise one-paragraph financial analysis and key takeaway for ${primaryTicker} based on this 5-year trend.`;
 
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
@@ -95,7 +121,7 @@ async function getResearchNote(ticker, priceData, apiKey) {
       reasoning: { enabled: false },
       messages: [
         { role: 'system', content: 'You are a professional financial research analyst. Be concise, objective, and insightful.' },
-        { role: 'user', content: `${summary}\n\nWrite a concise one-paragraph financial analysis and key takeaway for ${ticker} based on this 5-year trend.` }
+        { role: 'user', content: promptMessage }
       ]
     })
   });
@@ -125,46 +151,87 @@ async function readOpenRouterError(response) {
   return [`(HTTP ${response.status})`, hint, message].filter(Boolean).join(' ');
 }
 
-function renderResults(ticker, priceData, note) {
-  const latest = priceData[priceData.length - 1];
-  const start5Y = priceData[0];
-  const change5Y = latest.close - start5Y.close;
-  const pctChange5Y = (change5Y / start5Y.close) * 100;
-  const isPositive = change5Y >= 0;
+function renderResults(primaryTicker, primaryData, compareTicker, compareData, note) {
+  const pLatest = primaryData[primaryData.length - 1];
+  const pStart5Y = primaryData[0];
+  const pChange5Y = pLatest.close - pStart5Y.close;
+  const pPct5Y = (pChange5Y / pStart5Y.close) * 100;
+  const pIsPos = pChange5Y >= 0;
 
-  const highest5Y = Math.max(...priceData.map(d => d.high));
-  const lowest5Y = Math.min(...priceData.map(d => d.low));
+  let comparisonHeaderHTML = '';
+
+  if (compareTicker && compareData && compareData.length) {
+    const cLatest = compareData[compareData.length - 1];
+    const cStart5Y = compareData[0];
+    const cChange5Y = cLatest.close - cStart5Y.close;
+    const cPct5Y = (cChange5Y / cStart5Y.close) * 100;
+    const cIsPos = cChange5Y >= 0;
+
+    comparisonHeaderHTML = `
+      <div class="compare-cards-wrapper">
+        <div class="ticker-card primary-card">
+          <div class="card-badge">Primary</div>
+          <h3>${primaryTicker}</h3>
+          <p class="price-hero">
+            $${pLatest.close.toFixed(2)}
+            <span class="price-change ${pIsPos ? 'positive' : 'negative'}">
+              ${pIsPos ? '+' : ''}${pPct5Y.toFixed(2)}% (5Y)
+            </span>
+          </p>
+        </div>
+        <div class="vs-divider">VS</div>
+        <div class="ticker-card compare-card">
+          <div class="card-badge compare-badge">Compare</div>
+          <h3>${compareTicker}</h3>
+          <p class="price-hero">
+            $${cLatest.close.toFixed(2)}
+            <span class="price-change ${cIsPos ? 'positive' : 'negative'}">
+              ${cIsPos ? '+' : ''}${cPct5Y.toFixed(2)}% (5Y)
+            </span>
+          </p>
+        </div>
+      </div>
+    `;
+  } else {
+    comparisonHeaderHTML = `
+      <div class="ticker-header">
+        <div>
+          <h2>${primaryTicker}</h2>
+          <p class="price-hero">
+            $${pLatest.close.toFixed(2)}
+            <span class="price-change ${pIsPos ? 'positive' : 'negative'}">
+              ${pIsPos ? '+' : ''}$${pChange5Y.toFixed(2)} (${pIsPos ? '+' : ''}${pPct5Y.toFixed(2)}% 5Y)
+            </span>
+          </p>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">5Y High</span>
+            <span class="stat-value">$${Math.max(...primaryData.map(d => d.high)).toFixed(2)}</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">5Y Low</span>
+            <span class="stat-value">$${Math.min(...primaryData.map(d => d.low)).toFixed(2)}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
   results.innerHTML = `
-    <div class="ticker-header">
-      <div>
-        <h2>${ticker}</h2>
-        <p class="price-hero">
-          $${latest.close.toFixed(2)}
-          <span class="price-change ${isPositive ? 'positive' : 'negative'}">
-            ${isPositive ? '+' : ''}$${change5Y.toFixed(2)} (${isPositive ? '+' : ''}${pctChange5Y.toFixed(2)}% 5Y)
-          </span>
-        </p>
-      </div>
-      <div class="stats-grid">
-        <div class="stat-card">
-          <span class="stat-label">5Y High</span>
-          <span class="stat-value">$${highest5Y.toFixed(2)}</span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-label">5Y Low</span>
-          <span class="stat-value">$${lowest5Y.toFixed(2)}</span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-label">Data Range</span>
-          <span class="stat-value">${start5Y.date.slice(0,7)} – ${latest.date.slice(0,7)}</span>
-        </div>
-      </div>
-    </div>
+    ${comparisonHeaderHTML}
 
     <div class="chart-section">
       <div class="chart-header">
-        <h3>5-Year Stock Price Trend</h3>
+        <div class="chart-title-area">
+          <h3>${compareTicker ? `${primaryTicker} vs ${compareTicker} Comparison` : '5-Year Stock Price Trend'}</h3>
+          ${compareTicker ? `
+            <div class="mode-selector">
+              <button class="mode-btn ${chartMode === 'pct' ? 'active' : ''}" data-mode="pct">% Return</button>
+              <button class="mode-btn ${chartMode === 'price' ? 'active' : ''}" data-mode="price">Price ($)</button>
+            </div>
+          ` : ''}
+        </div>
         <div class="range-selector">
           <button class="range-btn" data-range="1Y">1Y</button>
           <button class="range-btn" data-range="2Y">2Y</button>
@@ -178,7 +245,7 @@ function renderResults(ticker, priceData, note) {
     </div>
 
     <div class="research-note-section">
-      <h3>AI Research Analysis</h3>
+      <h3>${compareTicker ? 'AI Comparative Research Analysis' : 'AI Research Analysis'}</h3>
       <p class="note">${note}</p>
     </div>
   `;
@@ -193,22 +260,40 @@ function renderResults(ticker, priceData, note) {
       filterAndRenderChart(range);
     });
   });
+
+  // Attach event listeners to mode selector buttons if present
+  const modeButtons = results.querySelectorAll('.mode-btn');
+  modeButtons.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      modeButtons.forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      chartMode = e.target.getAttribute('data-mode');
+      const activeRangeBtn = results.querySelector('.range-btn.active');
+      const range = activeRangeBtn ? activeRangeBtn.getAttribute('data-range') : '5Y';
+      filterAndRenderChart(range);
+    });
+  });
 }
 
 function filterAndRenderChart(range) {
-  if (!activePriceData || !activePriceData.length) return;
+  if (!activePrimaryData || !activePrimaryData.length) return;
 
-  let days = activePriceData.length;
+  let days = activePrimaryData.length;
   if (range === '1Y') days = 252;
   else if (range === '2Y') days = 504;
   else if (range === '3Y') days = 756;
-  else if (range === '5Y') days = activePriceData.length;
+  else if (range === '5Y') days = activePrimaryData.length;
 
-  const filteredData = activePriceData.slice(Math.max(0, activePriceData.length - days));
-  renderChart(filteredData);
+  const filteredPrimary = activePrimaryData.slice(Math.max(0, activePrimaryData.length - days));
+  let filteredCompare = null;
+  if (activeCompareData && activeCompareData.length) {
+    filteredCompare = activeCompareData.slice(Math.max(0, activeCompareData.length - days));
+  }
+
+  renderChart(filteredPrimary, filteredCompare);
 }
 
-function renderChart(data) {
+function renderChart(primaryData, compareData) {
   const canvas = document.getElementById('stock-chart');
   if (!canvas) return;
 
@@ -217,102 +302,229 @@ function renderChart(data) {
     stockChart.destroy();
   }
 
-  const startPrice = data[0].close;
-  const endPrice = data[data.length - 1].close;
-  const isGain = endPrice >= startPrice;
+  // Create aligned dates lookup
+  const primaryDateMap = new Map(primaryData.map(d => [d.date, d.close]));
 
-  const lineColor = isGain ? '#059669' : '#dc2626';
-  const gradientTop = isGain ? 'rgba(5, 150, 105, 0.25)' : 'rgba(220, 38, 38, 0.25)';
-  const gradientBottom = isGain ? 'rgba(5, 150, 105, 0.0)' : 'rgba(220, 38, 38, 0.0)';
+  let datasets = [];
+  const isComparing = compareData && compareData.length > 0;
 
-  const gradient = ctx.createLinearGradient(0, 0, 0, 300);
-  gradient.addColorStop(0, gradientTop);
-  gradient.addColorStop(1, gradientBottom);
+  if (isComparing && chartMode === 'pct') {
+    // Percentage growth comparison (normalized to 0% at start of period)
+    const pStart = primaryData[0].close;
+    const cStart = compareData[0].close;
 
-  const labels = data.map(d => d.date);
-  const prices = data.map(d => d.close);
+    const compareDateMap = new Map(compareData.map(d => [d.date, d.close]));
 
-  stockChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: labels,
-      datasets: [
-        {
-          label: `${currentTicker} Price ($)`,
-          data: prices,
-          borderColor: lineColor,
-          borderWidth: 2,
-          fill: true,
-          backgroundColor: gradient,
-          tension: 0.1,
-          pointRadius: 0,
-          pointHoverRadius: 5,
-          pointHoverBackgroundColor: lineColor,
-          pointHoverBorderColor: '#ffffff',
-          pointHoverBorderWidth: 2
-        }
-      ]
+    // All unique dates sorted
+    const allDates = Array.from(new Set([...primaryData.map(d => d.date), ...compareData.map(d => d.date)])).sort();
+
+    let lastP = pStart;
+    let lastC = cStart;
+
+    const pPctData = [];
+    const cPctData = [];
+
+    allDates.forEach(date => {
+      if (primaryDateMap.has(date)) lastP = primaryDateMap.get(date);
+      if (compareDateMap.has(date)) lastC = compareDateMap.get(date);
+
+      pPctData.push(((lastP - pStart) / pStart) * 100);
+      cPctData.push(((lastC - cStart) / cStart) * 100);
+    });
+
+    datasets = [
+      {
+        label: `${currentPrimaryTicker} (% Return)`,
+        data: pPctData,
+        borderColor: '#059669',
+        borderWidth: 2,
+        fill: false,
+        tension: 0.1,
+        pointRadius: 0,
+        pointHoverRadius: 5,
+        pointHoverBackgroundColor: '#059669'
+      },
+      {
+        label: `${currentCompareTicker} (% Return)`,
+        data: cPctData,
+        borderColor: '#2563eb',
+        borderWidth: 2,
+        fill: false,
+        tension: 0.1,
+        pointRadius: 0,
+        pointHoverRadius: 5,
+        pointHoverBackgroundColor: '#2563eb'
+      }
+    ];
+
+    stockChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: allDates,
+        datasets: datasets
+      },
+      options: getChartOptions(true, '%')
+    });
+
+  } else if (isComparing && chartMode === 'price') {
+    // Dual stock price line chart
+    const compareDateMap = new Map(compareData.map(d => [d.date, d.close]));
+    const allDates = Array.from(new Set([...primaryData.map(d => d.date), ...compareData.map(d => d.date)])).sort();
+
+    let lastP = primaryData[0].close;
+    let lastC = compareData[0].close;
+
+    const pPriceData = [];
+    const cPriceData = [];
+
+    allDates.forEach(date => {
+      if (primaryDateMap.has(date)) lastP = primaryDateMap.get(date);
+      if (compareDateMap.has(date)) lastC = compareDateMap.get(date);
+
+      pPriceData.push(lastP);
+      cPriceData.push(lastC);
+    });
+
+    datasets = [
+      {
+        label: `${currentPrimaryTicker} ($)`,
+        data: pPriceData,
+        borderColor: '#059669',
+        borderWidth: 2,
+        fill: false,
+        tension: 0.1,
+        pointRadius: 0,
+        pointHoverRadius: 5
+      },
+      {
+        label: `${currentCompareTicker} ($)`,
+        data: cPriceData,
+        borderColor: '#2563eb',
+        borderWidth: 2,
+        fill: false,
+        tension: 0.1,
+        pointRadius: 0,
+        pointHoverRadius: 5
+      }
+    ];
+
+    stockChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: allDates,
+        datasets: datasets
+      },
+      options: getChartOptions(true, '$')
+    });
+
+  } else {
+    // Single ticker mode
+    const labels = primaryData.map(d => d.date);
+    const prices = primaryData.map(d => d.close);
+    const startPrice = prices[0];
+    const endPrice = prices[prices.length - 1];
+    const isGain = endPrice >= startPrice;
+
+    const lineColor = isGain ? '#059669' : '#dc2626';
+    const gradientTop = isGain ? 'rgba(5, 150, 105, 0.25)' : 'rgba(220, 38, 38, 0.25)';
+    const gradientBottom = isGain ? 'rgba(5, 150, 105, 0.0)' : 'rgba(220, 38, 38, 0.0)';
+
+    const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+    gradient.addColorStop(0, gradientTop);
+    gradient.addColorStop(1, gradientBottom);
+
+    datasets = [
+      {
+        label: `${currentPrimaryTicker} Price ($)`,
+        data: prices,
+        borderColor: lineColor,
+        borderWidth: 2,
+        fill: true,
+        backgroundColor: gradient,
+        tension: 0.1,
+        pointRadius: 0,
+        pointHoverRadius: 5,
+        pointHoverBackgroundColor: lineColor,
+        pointHoverBorderColor: '#ffffff',
+        pointHoverBorderWidth: 2
+      }
+    ];
+
+    stockChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: datasets
+      },
+      options: getChartOptions(false, '$')
+    });
+  }
+}
+
+function getChartOptions(showLegend, unit = '$') {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: {
+      mode: 'index',
+      intersect: false
     },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: {
-        mode: 'index',
-        intersect: false
-      },
-      plugins: {
-        legend: {
-          display: false
-        },
-        tooltip: {
-          backgroundColor: '#0d2818',
-          titleFont: { size: 12, weight: 'bold' },
-          bodyFont: { size: 13, weight: 'bold' },
-          padding: 10,
-          displayColors: false,
-          callbacks: {
-            title: (items) => {
-              if (!items.length) return '';
-              const dateStr = items[0].label;
-              return new Date(dateStr).toLocaleDateString(undefined, {
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric'
-              });
-            },
-            label: (item) => {
-              return `Close Price: $${Number(item.raw).toFixed(2)}`;
-            }
-          }
+    plugins: {
+      legend: {
+        display: showLegend,
+        position: 'top',
+        labels: {
+          usePointStyle: true,
+          font: { size: 12, weight: '600' }
         }
       },
-      scales: {
-        x: {
-          grid: {
-            display: false
+      tooltip: {
+        backgroundColor: '#0d2818',
+        titleFont: { size: 12, weight: 'bold' },
+        bodyFont: { size: 13, weight: 'bold' },
+        padding: 10,
+        callbacks: {
+          title: (items) => {
+            if (!items.length) return '';
+            const dateStr = items[0].label;
+            return new Date(dateStr).toLocaleDateString(undefined, {
+              year: 'numeric',
+              month: 'short',
+              day: 'numeric'
+            });
           },
-          ticks: {
-            maxTicksLimit: 8,
-            color: '#4b6b55',
-            font: { size: 11 },
-            callback: function(val, index) {
-              const label = this.getLabelForValue(val);
-              return label ? label.slice(0, 7) : '';
+          label: (item) => {
+            const val = Number(item.raw);
+            if (unit === '%') {
+              return `${item.dataset.label}: ${val >= 0 ? '+' : ''}${val.toFixed(2)}%`;
             }
-          }
-        },
-        y: {
-          grid: {
-            color: '#e6f4ea'
-          },
-          ticks: {
-            color: '#4b6b55',
-            font: { size: 11 },
-            callback: (val) => `$${Number(val).toFixed(0)}`
+            return `${item.dataset.label}: $${val.toFixed(2)}`;
           }
         }
       }
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: {
+          maxTicksLimit: 8,
+          color: '#4b6b55',
+          font: { size: 11 },
+          callback: function(val) {
+            const label = this.getLabelForValue(val);
+            return label ? label.slice(0, 7) : '';
+          }
+        }
+      },
+      y: {
+        grid: { color: '#e6f4ea' },
+        ticks: {
+          color: '#4b6b55',
+          font: { size: 11 },
+          callback: (val) => unit === '%' ? `${Number(val).toFixed(0)}%` : `$${Number(val).toFixed(0)}`
+        }
+      }
     }
-  });
+  };
 }
 
