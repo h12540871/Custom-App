@@ -1,0 +1,8 @@
+{
+  "name": "GenAI Finance App",
+  "description": "Financial stock analysis application using Twelve Data and GenAI research notes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
