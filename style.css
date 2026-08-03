@@ -265,6 +265,169 @@ body {
   color: #064e3b;
 }
 
+/* Signals & Technical Indicators */
+.signals-section {
+  margin-top: 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.signals-header h3 {
+  margin: 0 0 0.85rem;
+  font-size: 1.1rem;
+  color: #064e3b;
+  font-weight: 600;
+}
+
+.signals-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+@media (min-width: 600px) {
+  .signals-grid {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  }
+}
+
+.signal-card {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem;
+  box-shadow: 0 2px 4px rgba(5, 150, 105, 0.04);
+}
+
+.signal-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px dashed var(--line);
+}
+
+.signal-card-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #064e3b;
+}
+
+.signal-badge {
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 0.25rem 0.65rem;
+  border-radius: 20px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.signal-badge.strong-buy {
+  background: #10b981;
+  color: #ffffff;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+}
+
+.signal-badge.buy {
+  background: #d1fae5;
+  color: #047857;
+}
+
+.signal-badge.neutral {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.signal-badge.sell {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.signal-badge.strong-sell {
+  background: #ef4444;
+  color: #ffffff;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+}
+
+.signal-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.indicator-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+
+.ind-label {
+  font-weight: 600;
+  color: #064e3b;
+}
+
+.ind-val {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.ind-val.pos {
+  color: #047857;
+}
+
+.ind-val.neg {
+  color: #dc2626;
+}
+
+.sub-val {
+  font-weight: normal;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.ind-desc {
+  margin: -0.25rem 0 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+/* Chart Tab Bar */
+.chart-tab-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 2px solid var(--line);
+  padding-bottom: 2px;
+}
+
+.tab-btn {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-radius: 6px 6px 0 0;
+  background: #f1f5f9;
+  color: #475569;
+  box-shadow: none;
+  width: auto;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.tab-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.tab-btn.active {
+  background: #059669;
+  color: #ffffff;
+  border-color: #059669;
+}
+
 .chart-section {
   margin-top: 1.25rem;
 }

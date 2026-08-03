@@ -11,11 +11,129 @@ const form = document.getElementById('ticker-form');
 const results = document.getElementById('results');
 
 let stockChart = null;
+let macdChart = null;
 let activePrimaryData = [];
 let activeCompareData = [];
 let currentPrimaryTicker = '';
 let currentCompareTicker = '';
 let chartMode = 'pct'; // 'pct' or 'price'
+let activeTab = 'price'; // 'price', 'macd', or 'roc'
+
+// --- TECHNICAL INDICATORS MATH ---
+
+function calculateEMA(prices, period) {
+  const k = 2 / (period + 1);
+  const ema = new Array(prices.length);
+  let sum = 0;
+  for (let i = 0; i < period && i < prices.length; i++) {
+    sum += prices[i];
+    ema[i] = sum / (i + 1);
+  }
+  for (let i = period; i < prices.length; i++) {
+    ema[i] = prices[i] * k + ema[i - 1] * (1 - k);
+  }
+  return ema;
+}
+
+function calculateMACD(data, fast = 12, slow = 26, signalPeriod = 9) {
+  const closes = data.map(d => d.close);
+  const emaFast = calculateEMA(closes, fast);
+  const emaSlow = calculateEMA(closes, slow);
+
+  const macdLine = emaFast.map((val, i) => val - emaSlow[i]);
+  const signalLine = calculateEMA(macdLine, signalPeriod);
+  const histogram = macdLine.map((val, i) => val - signalLine[i]);
+
+  return { macdLine, signalLine, histogram };
+}
+
+function calculateROC(data, period = 14) {
+  const closes = data.map(d => d.close);
+  const roc = new Array(closes.length).fill(0);
+
+  for (let i = 0; i < closes.length; i++) {
+    if (i < period) {
+      roc[i] = 0;
+    } else {
+      const prev = closes[i - period];
+      roc[i] = prev !== 0 ? ((closes[i] - prev) / prev) * 100 : 0;
+    }
+  }
+  return roc;
+}
+
+function analyzeTechnicalSignals(data) {
+  if (!data || data.length < 30) return null;
+
+  const closes = data.map(d => d.close);
+  const macd = calculateMACD(data);
+  const roc = calculateROC(data, 14);
+
+  const len = data.length;
+  const curMACD = macd.macdLine[len - 1];
+  const prevMACD = macd.macdLine[len - 2];
+  const curSignal = macd.signalLine[len - 1];
+  const prevSignal = macd.signalLine[len - 2];
+  const curHist = macd.histogram[len - 1];
+  const curROC = roc[len - 1];
+  const prevROC = roc[len - 2];
+
+  // Crossover checks
+  const isBullishCrossover = prevMACD <= prevSignal && curMACD > curSignal;
+  const isBearishCrossover = prevMACD >= prevSignal && curMACD < curSignal;
+  const isMACDBullish = curMACD > curSignal;
+
+  // ROC trend
+  const isROCUptrend = curROC > prevROC && curROC > 0;
+  const isROCDowntrend = curROC < prevROC && curROC < 0;
+
+  let overallSignal = 'NEUTRAL / HOLD';
+  let signalClass = 'neutral';
+  let macdDescription = '';
+  let rocDescription = '';
+
+  if (isBullishCrossover) {
+    overallSignal = 'STRONG BUY';
+    signalClass = 'strong-buy';
+    macdDescription = 'Bullish MACD Crossover: MACD line crossed above Signal line.';
+  } else if (isBearishCrossover) {
+    overallSignal = 'STRONG SELL';
+    signalClass = 'strong-sell';
+    macdDescription = 'Bearish MACD Crossover: MACD line crossed below Signal line.';
+  } else if (isMACDBullish && curROC > 0) {
+    overallSignal = curROC > 5 ? 'STRONG BUY' : 'BUY';
+    signalClass = curROC > 5 ? 'strong-buy' : 'buy';
+    macdDescription = 'Bullish Momentum: MACD remains above Signal line.';
+  } else if (!isMACDBullish && curROC < 0) {
+    overallSignal = curROC < -5 ? 'STRONG SELL' : 'SELL';
+    signalClass = curROC < -5 ? 'strong-sell' : 'sell';
+    macdDescription = 'Bearish Momentum: MACD remains below Signal line.';
+  } else {
+    overallSignal = 'NEUTRAL / HOLD';
+    signalClass = 'neutral';
+    macdDescription = isMACDBullish ? 'Mild Bullish Bias' : 'Mild Bearish Bias';
+  }
+
+  if (curROC > 0) {
+    rocDescription = `Positive Momentum (+${curROC.toFixed(2)}% over 14 periods)${isROCUptrend ? ' - Accelerating' : ' - Decelerating'}`;
+  } else {
+    rocDescription = `Negative Momentum (${curROC.toFixed(2)}% over 14 periods)${isROCDowntrend ? ' - Accelerating' : ' - Decelerating'}`;
+  }
+
+  return {
+    overallSignal,
+    signalClass,
+    curMACD: curMACD.toFixed(2),
+    curSignal: curSignal.toFixed(2),
+    curHist: curHist.toFixed(2),
+    curROC: curROC.toFixed(2),
+    macdDescription,
+    rocDescription,
+    isMACDBullish,
+    isBullishCrossover,
+    isBearishCrossover
+  };
+}
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -92,22 +210,27 @@ async function getResearchNote(primaryTicker, primaryData, compareTicker, compar
   const pFirst = primaryData[0];
   const pLatest = primaryData[primaryData.length - 1];
   const pPct5Y = ((pLatest.close - pFirst.close) / pFirst.close) * 100;
+  const pSignals = analyzeTechnicalSignals(primaryData);
 
   let summary =
     `${primaryTicker} 5-year trend (${pFirst.date} to ${pLatest.date}): ` +
-    `Start $${pFirst.close.toFixed(2)}, Latest $${pLatest.close.toFixed(2)} (${pPct5Y >= 0 ? '+' : ''}${pPct5Y.toFixed(1)}%).`;
+    `Start $${pFirst.close.toFixed(2)}, Latest $${pLatest.close.toFixed(2)} (${pPct5Y >= 0 ? '+' : ''}${pPct5Y.toFixed(1)}%). ` +
+    `Technical Indicators -> MACD(12,26,9): ${pSignals?.curMACD} (Signal: ${pSignals?.curSignal}, Hist: ${pSignals?.curHist}), ` +
+    `ROC(14): ${pSignals?.curROC}%, Signal: ${pSignals?.overallSignal} (${pSignals?.macdDescription}).`;
 
   if (compareTicker && compareData && compareData.length) {
     const cFirst = compareData[0];
     const cLatest = compareData[compareData.length - 1];
     const cPct5Y = ((cLatest.close - cFirst.close) / cFirst.close) * 100;
-    summary += `\nComparison Stock (${compareTicker}) 5-year trend (${cFirst.date} to ${cLatest.date}): ` +
-      `Start $${cFirst.close.toFixed(2)}, Latest $${cLatest.close.toFixed(2)} (${cPct5Y >= 0 ? '+' : ''}${cPct5Y.toFixed(1)}%).`;
+    const cSignals = analyzeTechnicalSignals(compareData);
+    summary += `\nComparison Stock (${compareTicker}) 5-year trend: ` +
+      `Start $${cFirst.close.toFixed(2)}, Latest $${cLatest.close.toFixed(2)} (${cPct5Y >= 0 ? '+' : ''}${cPct5Y.toFixed(1)}%). ` +
+      `Technical Indicators -> MACD: ${cSignals?.curMACD}, ROC(14): ${cSignals?.curROC}%, Signal: ${cSignals?.overallSignal}.`;
   }
 
   const promptMessage = (compareTicker && compareData)
-    ? `${summary}\n\nWrite a concise one-paragraph comparative research note evaluating ${primaryTicker} vs ${compareTicker} based on their 5-year performance and market positioning.`
-    : `${summary}\n\nWrite a concise one-paragraph financial analysis and key takeaway for ${primaryTicker} based on this 5-year trend.`;
+    ? `${summary}\n\nWrite a concise one-paragraph comparative research note evaluating ${primaryTicker} vs ${compareTicker} incorporating both price action and technical indicators (MACD and Rate of Change ROC) to guide investors.`
+    : `${summary}\n\nWrite a concise one-paragraph financial research note for ${primaryTicker} incorporating both 5-year price action and current technical indicators (MACD and ROC momentum) with clear buy/sell guidance.`;
 
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
@@ -157,6 +280,9 @@ function renderResults(primaryTicker, primaryData, compareTicker, compareData, n
   const pChange5Y = pLatest.close - pStart5Y.close;
   const pPct5Y = (pChange5Y / pStart5Y.close) * 100;
   const pIsPos = pChange5Y >= 0;
+
+  const pSignals = analyzeTechnicalSignals(primaryData);
+  const cSignals = (compareTicker && compareData) ? analyzeTechnicalSignals(compareData) : null;
 
   let comparisonHeaderHTML = '';
 
@@ -218,15 +344,77 @@ function renderResults(primaryTicker, primaryData, compareTicker, compareData, n
     `;
   }
 
+  // Technical Signals Grid HTML
+  let signalsHTML = '';
+  if (pSignals) {
+    signalsHTML = `
+      <div class="signals-section">
+        <div class="signals-header">
+          <h3>Technical Indicators & Buy/Sell Signals</h3>
+        </div>
+        <div class="signals-grid">
+          <div class="signal-card">
+            <div class="signal-card-header">
+              <span class="signal-card-title">${primaryTicker} Technical Signal</span>
+              <span class="signal-badge ${pSignals.signalClass}">${pSignals.overallSignal}</span>
+            </div>
+            <div class="signal-details">
+              <div class="indicator-row">
+                <span class="ind-label">MACD (12, 26, 9):</span>
+                <span class="ind-val">${pSignals.curMACD} <span class="sub-val">(Signal: ${pSignals.curSignal}, Hist: ${pSignals.curHist})</span></span>
+              </div>
+              <p class="ind-desc">${pSignals.macdDescription}</p>
+
+              <div class="indicator-row">
+                <span class="ind-label">ROC (14 Momentum):</span>
+                <span class="ind-val ${Number(pSignals.curROC) >= 0 ? 'pos' : 'neg'}">${Number(pSignals.curROC) >= 0 ? '+' : ''}${pSignals.curROC}%</span>
+              </div>
+              <p class="ind-desc">${pSignals.rocDescription}</p>
+            </div>
+          </div>
+
+          ${cSignals ? `
+            <div class="signal-card">
+              <div class="signal-card-header">
+                <span class="signal-card-title">${compareTicker} Technical Signal</span>
+                <span class="signal-badge ${cSignals.signalClass}">${cSignals.overallSignal}</span>
+              </div>
+              <div class="signal-details">
+                <div class="indicator-row">
+                  <span class="ind-label">MACD (12, 26, 9):</span>
+                  <span class="ind-val">${cSignals.curMACD} <span class="sub-val">(Signal: ${cSignals.curSignal}, Hist: ${cSignals.curHist})</span></span>
+                </div>
+                <p class="ind-desc">${cSignals.macdDescription}</p>
+
+                <div class="indicator-row">
+                  <span class="ind-label">ROC (14 Momentum):</span>
+                  <span class="ind-val ${Number(cSignals.curROC) >= 0 ? 'pos' : 'neg'}">${Number(cSignals.curROC) >= 0 ? '+' : ''}${cSignals.curROC}%</span>
+                </div>
+                <p class="ind-desc">${cSignals.rocDescription}</p>
+              </div>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  }
+
   results.innerHTML = `
     ${comparisonHeaderHTML}
+    ${signalsHTML}
 
     <div class="chart-section">
+      <div class="chart-tab-bar">
+        <button class="tab-btn active" data-tab="price">Stock Price</button>
+        <button class="tab-btn" data-tab="macd">MACD Indicator</button>
+        <button class="tab-btn" data-tab="roc">Rate of Change (ROC)</button>
+      </div>
+
       <div class="chart-header">
         <div class="chart-title-area">
-          <h3>${compareTicker ? `${primaryTicker} vs ${compareTicker} Comparison` : '5-Year Stock Price Trend'}</h3>
+          <h3 id="chart-dynamic-title">${compareTicker ? `${primaryTicker} vs ${compareTicker}` : 'Price Chart'}</h3>
           ${compareTicker ? `
-            <div class="mode-selector">
+            <div class="mode-selector" id="price-mode-selector">
               <button class="mode-btn ${chartMode === 'pct' ? 'active' : ''}" data-mode="pct">% Return</button>
               <button class="mode-btn ${chartMode === 'price' ? 'active' : ''}" data-mode="price">Price ($)</button>
             </div>
@@ -249,6 +437,34 @@ function renderResults(primaryTicker, primaryData, compareTicker, compareData, n
       <p class="note">${note}</p>
     </div>
   `;
+
+  // Attach event listeners to chart tabs
+  const tabButtons = results.querySelectorAll('.tab-btn');
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      tabButtons.forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      activeTab = e.target.getAttribute('data-tab');
+
+      // Update mode selector visibility
+      const priceModeSel = results.querySelector('#price-mode-selector');
+      if (priceModeSel) {
+        priceModeSel.style.display = activeTab === 'price' ? 'flex' : 'none';
+      }
+
+      // Update title
+      const titleElem = results.querySelector('#chart-dynamic-title');
+      if (titleElem) {
+        if (activeTab === 'macd') titleElem.textContent = `${primaryTicker} MACD (12, 26, 9) Oscillator`;
+        else if (activeTab === 'roc') titleElem.textContent = `${primaryTicker} Rate of Change (ROC 14) Momentum`;
+        else titleElem.textContent = compareTicker ? `${primaryTicker} vs ${compareTicker}` : 'Price Chart';
+      }
+
+      const activeRangeBtn = results.querySelector('.range-btn.active');
+      const range = activeRangeBtn ? activeRangeBtn.getAttribute('data-range') : '5Y';
+      filterAndRenderChart(range);
+    });
+  });
 
   // Attach event listeners to range selector buttons
   const rangeButtons = results.querySelectorAll('.range-btn');
@@ -302,162 +518,238 @@ function renderChart(primaryData, compareData) {
     stockChart.destroy();
   }
 
-  // Create aligned dates lookup
-  const primaryDateMap = new Map(primaryData.map(d => [d.date, d.close]));
-
-  let datasets = [];
   const isComparing = compareData && compareData.length > 0;
 
-  if (isComparing && chartMode === 'pct') {
-    // Percentage growth comparison (normalized to 0% at start of period)
-    const pStart = primaryData[0].close;
-    const cStart = compareData[0].close;
+  if (activeTab === 'macd') {
+    // RENDER MACD CHART
+    const macdP = calculateMACD(primaryData);
+    const labels = primaryData.map(d => d.date);
 
-    const compareDateMap = new Map(compareData.map(d => [d.date, d.close]));
-
-    // All unique dates sorted
-    const allDates = Array.from(new Set([...primaryData.map(d => d.date), ...compareData.map(d => d.date)])).sort();
-
-    let lastP = pStart;
-    let lastC = cStart;
-
-    const pPctData = [];
-    const cPctData = [];
-
-    allDates.forEach(date => {
-      if (primaryDateMap.has(date)) lastP = primaryDateMap.get(date);
-      if (compareDateMap.has(date)) lastC = compareDateMap.get(date);
-
-      pPctData.push(((lastP - pStart) / pStart) * 100);
-      cPctData.push(((lastC - cStart) / cStart) * 100);
-    });
-
-    datasets = [
+    const datasets = [
       {
-        label: `${currentPrimaryTicker} (% Return)`,
-        data: pPctData,
-        borderColor: '#059669',
-        borderWidth: 2,
-        fill: false,
-        tension: 0.1,
-        pointRadius: 0,
-        pointHoverRadius: 5,
-        pointHoverBackgroundColor: '#059669'
-      },
-      {
-        label: `${currentCompareTicker} (% Return)`,
-        data: cPctData,
+        label: `${currentPrimaryTicker} MACD`,
+        data: macdP.macdLine,
         borderColor: '#2563eb',
         borderWidth: 2,
         fill: false,
-        tension: 0.1,
         pointRadius: 0,
-        pointHoverRadius: 5,
-        pointHoverBackgroundColor: '#2563eb'
+        type: 'line'
+      },
+      {
+        label: 'Signal Line',
+        data: macdP.signalLine,
+        borderColor: '#ea580c',
+        borderWidth: 1.5,
+        borderDash: [4, 4],
+        fill: false,
+        pointRadius: 0,
+        type: 'line'
+      },
+      {
+        label: 'Histogram',
+        data: macdP.histogram,
+        backgroundColor: macdP.histogram.map(v => v >= 0 ? 'rgba(5, 150, 105, 0.6)' : 'rgba(220, 38, 38, 0.6)'),
+        type: 'bar',
+        barThickness: 'flex'
       }
     ];
 
+    if (isComparing) {
+      const macdC = calculateMACD(compareData);
+      datasets.push({
+        label: `${currentCompareTicker} MACD`,
+        data: macdC.macdLine,
+        borderColor: '#9333ea',
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 0,
+        type: 'line'
+      });
+    }
+
+    stockChart = new Chart(ctx, {
+      data: { labels, datasets },
+      options: getChartOptions(true, '')
+    });
+
+  } else if (activeTab === 'roc') {
+    // RENDER ROC (Rate of Change 14) CHART
+    const rocP = calculateROC(primaryData, 14);
+    const labels = primaryData.map(d => d.date);
+
+    const datasets = [
+      {
+        label: `${currentPrimaryTicker} ROC(14) %`,
+        data: rocP,
+        borderColor: '#059669',
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 0,
+        tension: 0.1
+      }
+    ];
+
+    if (isComparing) {
+      const rocC = calculateROC(compareData, 14);
+      datasets.push({
+        label: `${currentCompareTicker} ROC(14) %`,
+        data: rocC,
+        borderColor: '#2563eb',
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 0,
+        tension: 0.1
+      });
+    }
+
     stockChart = new Chart(ctx, {
       type: 'line',
-      data: {
-        labels: allDates,
-        datasets: datasets
-      },
+      data: { labels, datasets },
       options: getChartOptions(true, '%')
     });
 
-  } else if (isComparing && chartMode === 'price') {
-    // Dual stock price line chart
-    const compareDateMap = new Map(compareData.map(d => [d.date, d.close]));
-    const allDates = Array.from(new Set([...primaryData.map(d => d.date), ...compareData.map(d => d.date)])).sort();
-
-    let lastP = primaryData[0].close;
-    let lastC = compareData[0].close;
-
-    const pPriceData = [];
-    const cPriceData = [];
-
-    allDates.forEach(date => {
-      if (primaryDateMap.has(date)) lastP = primaryDateMap.get(date);
-      if (compareDateMap.has(date)) lastC = compareDateMap.get(date);
-
-      pPriceData.push(lastP);
-      cPriceData.push(lastC);
-    });
-
-    datasets = [
-      {
-        label: `${currentPrimaryTicker} ($)`,
-        data: pPriceData,
-        borderColor: '#059669',
-        borderWidth: 2,
-        fill: false,
-        tension: 0.1,
-        pointRadius: 0,
-        pointHoverRadius: 5
-      },
-      {
-        label: `${currentCompareTicker} ($)`,
-        data: cPriceData,
-        borderColor: '#2563eb',
-        borderWidth: 2,
-        fill: false,
-        tension: 0.1,
-        pointRadius: 0,
-        pointHoverRadius: 5
-      }
-    ];
-
-    stockChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: allDates,
-        datasets: datasets
-      },
-      options: getChartOptions(true, '$')
-    });
-
   } else {
-    // Single ticker mode
-    const labels = primaryData.map(d => d.date);
-    const prices = primaryData.map(d => d.close);
-    const startPrice = prices[0];
-    const endPrice = prices[prices.length - 1];
-    const isGain = endPrice >= startPrice;
+    // RENDER PRICE CHART
+    const primaryDateMap = new Map(primaryData.map(d => [d.date, d.close]));
+    let datasets = [];
 
-    const lineColor = isGain ? '#059669' : '#dc2626';
-    const gradientTop = isGain ? 'rgba(5, 150, 105, 0.25)' : 'rgba(220, 38, 38, 0.25)';
-    const gradientBottom = isGain ? 'rgba(5, 150, 105, 0.0)' : 'rgba(220, 38, 38, 0.0)';
+    if (isComparing && chartMode === 'pct') {
+      const pStart = primaryData[0].close;
+      const cStart = compareData[0].close;
+      const compareDateMap = new Map(compareData.map(d => [d.date, d.close]));
+      const allDates = Array.from(new Set([...primaryData.map(d => d.date), ...compareData.map(d => d.date)])).sort();
 
-    const gradient = ctx.createLinearGradient(0, 0, 0, 300);
-    gradient.addColorStop(0, gradientTop);
-    gradient.addColorStop(1, gradientBottom);
+      let lastP = pStart;
+      let lastC = cStart;
 
-    datasets = [
-      {
-        label: `${currentPrimaryTicker} Price ($)`,
-        data: prices,
-        borderColor: lineColor,
-        borderWidth: 2,
-        fill: true,
-        backgroundColor: gradient,
-        tension: 0.1,
-        pointRadius: 0,
-        pointHoverRadius: 5,
-        pointHoverBackgroundColor: lineColor,
-        pointHoverBorderColor: '#ffffff',
-        pointHoverBorderWidth: 2
-      }
-    ];
+      const pPctData = [];
+      const cPctData = [];
 
-    stockChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: labels,
-        datasets: datasets
-      },
-      options: getChartOptions(false, '$')
-    });
+      allDates.forEach(date => {
+        if (primaryDateMap.has(date)) lastP = primaryDateMap.get(date);
+        if (compareDateMap.has(date)) lastC = compareDateMap.get(date);
+
+        pPctData.push(((lastP - pStart) / pStart) * 100);
+        cPctData.push(((lastC - cStart) / cStart) * 100);
+      });
+
+      datasets = [
+        {
+          label: `${currentPrimaryTicker} (% Return)`,
+          data: pPctData,
+          borderColor: '#059669',
+          borderWidth: 2,
+          fill: false,
+          tension: 0.1,
+          pointRadius: 0,
+          pointHoverRadius: 5,
+          pointHoverBackgroundColor: '#059669'
+        },
+        {
+          label: `${currentCompareTicker} (% Return)`,
+          data: cPctData,
+          borderColor: '#2563eb',
+          borderWidth: 2,
+          fill: false,
+          tension: 0.1,
+          pointRadius: 0,
+          pointHoverRadius: 5,
+          pointHoverBackgroundColor: '#2563eb'
+        }
+      ];
+
+      stockChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: allDates, datasets },
+        options: getChartOptions(true, '%')
+      });
+
+    } else if (isComparing && chartMode === 'price') {
+      const compareDateMap = new Map(compareData.map(d => [d.date, d.close]));
+      const allDates = Array.from(new Set([...primaryData.map(d => d.date), ...compareData.map(d => d.date)])).sort();
+
+      let lastP = primaryData[0].close;
+      let lastC = compareData[0].close;
+
+      const pPriceData = [];
+      const cPriceData = [];
+
+      allDates.forEach(date => {
+        if (primaryDateMap.has(date)) lastP = primaryDateMap.get(date);
+        if (compareDateMap.has(date)) lastC = compareDateMap.get(date);
+
+        pPriceData.push(lastP);
+        cPriceData.push(lastC);
+      });
+
+      datasets = [
+        {
+          label: `${currentPrimaryTicker} ($)`,
+          data: pPriceData,
+          borderColor: '#059669',
+          borderWidth: 2,
+          fill: false,
+          tension: 0.1,
+          pointRadius: 0,
+          pointHoverRadius: 5
+        },
+        {
+          label: `${currentCompareTicker} ($)`,
+          data: cPriceData,
+          borderColor: '#2563eb',
+          borderWidth: 2,
+          fill: false,
+          tension: 0.1,
+          pointRadius: 0,
+          pointHoverRadius: 5
+        }
+      ];
+
+      stockChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: allDates, datasets },
+        options: getChartOptions(true, '$')
+      });
+
+    } else {
+      // Single ticker price chart
+      const labels = primaryData.map(d => d.date);
+      const prices = primaryData.map(d => d.close);
+      const startPrice = prices[0];
+      const endPrice = prices[prices.length - 1];
+      const isGain = endPrice >= startPrice;
+
+      const lineColor = isGain ? '#059669' : '#dc2626';
+      const gradientTop = isGain ? 'rgba(5, 150, 105, 0.25)' : 'rgba(220, 38, 38, 0.25)';
+      const gradientBottom = isGain ? 'rgba(5, 150, 105, 0.0)' : 'rgba(220, 38, 38, 0.0)';
+
+      const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+      gradient.addColorStop(0, gradientTop);
+      gradient.addColorStop(1, gradientBottom);
+
+      datasets = [
+        {
+          label: `${currentPrimaryTicker} Price ($)`,
+          data: prices,
+          borderColor: lineColor,
+          borderWidth: 2,
+          fill: true,
+          backgroundColor: gradient,
+          tension: 0.1,
+          pointRadius: 0,
+          pointHoverRadius: 5,
+          pointHoverBackgroundColor: lineColor,
+          pointHoverBorderColor: '#ffffff',
+          pointHoverBorderWidth: 2
+        }
+      ];
+
+      stockChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets },
+        options: getChartOptions(false, '$')
+      });
+    }
   }
 }
 
